@@ -10,6 +10,7 @@ mod search;
 mod switcher;
 mod theme;
 mod vault;
+mod watcher;
 
 use app::TintaApp;
 

@@ -10,6 +10,7 @@ use crate::index::{build_backlinks, build_tags, Backlinks, Tags};
 use crate::search::{search_vault, outline, SearchHit};
 use crate::switcher::{OverlayPick, Overlays};
 use crate::vault::{Note, Vault};
+use crate::watcher::VaultWatcher;
 
 pub struct TintaApp {
     vault: Vault,
@@ -28,6 +29,9 @@ pub struct TintaApp {
     search_hits: Vec<SearchHit>,
     sidebar_selected: usize,
     pending_jump: Option<String>,
+    watcher: Option<VaultWatcher>,
+    watch_dirty: bool,
+    last_watch_event: Option<std::time::Instant>,
 }
 
 impl TintaApp {
@@ -53,6 +57,9 @@ impl TintaApp {
             search_hits: Vec::new(),
             sidebar_selected: 0,
             pending_jump: None,
+            watcher: VaultWatcher::start(&vault.root),
+            watch_dirty: false,
+            last_watch_event: None,
         };
         if !app.vault.notes.is_empty() {
             app.open_note(0);
@@ -99,12 +106,37 @@ impl TintaApp {
         self.graph = build_graph(&self.vault);
     }
 
+    /// Drena el watcher con debounce: reindexa 400 ms después del último
+    /// evento y recarga la nota actual solo si no hay edición local en curso.
+    fn pump_watcher(&mut self) {
+        let evs = self.watcher.as_mut().map(|w| w.poll()).unwrap_or_default();
+        if !evs.is_empty() {
+            self.watch_dirty = true;
+            self.last_watch_event = Some(std::time::Instant::now());
+        }
+        if self.watch_dirty
+            && self.last_watch_event.is_some_and(|t| t.elapsed() > std::time::Duration::from_millis(400))
+        {
+            self.watch_dirty = false;
+            self.reindex();
+            if let Some(note) = self.current.clone() {
+                let fstext = std::fs::read_to_string(&note.path).unwrap_or_default();
+                if self.text == self.saved_text && fstext != self.text {
+                    self.text = fstext;
+                    self.saved_text = self.text.clone();
+                }
+            }
+        }
+    }
+
     fn open_vault_dialog(&mut self) {
         if let Some(folder) = FileDialog::new().pick_folder() {
             self.vault = Vault::open(&folder.to_string_lossy());
             self.current = None;
             self.text.clear();
             self.saved_text.clear();
+            self.watcher = VaultWatcher::start(&self.vault.root);
+            self.watch_dirty = false;
             if !self.vault.notes.is_empty() {
                 self.open_note(0);
                 self.reindex();
@@ -216,6 +248,8 @@ impl TintaApp {
 impl eframe::App for TintaApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         crate::theme::configure(ui.ctx(), self.dark);
+
+        self.pump_watcher();
 
         Panel::left("explorer")
             .min_size(220.0)
