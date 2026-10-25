@@ -40,6 +40,7 @@ impl TintaApp {
             Some(p) => Vault::open(&p),
             None => Vault::default(),
         };
+        let watcher = VaultWatcher::start(&vault.root);
         let mut app = Self {
             vault,
             current: None,
@@ -57,7 +58,7 @@ impl TintaApp {
             search_hits: Vec::new(),
             sidebar_selected: 0,
             pending_jump: None,
-            watcher: VaultWatcher::start(&vault.root),
+            watcher,
             watch_dirty: false,
             last_watch_event: None,
         };
