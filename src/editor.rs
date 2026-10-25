@@ -70,8 +70,9 @@ fn split_inline(line: &str) -> Vec<Seg> {
                 if !plain.is_empty() {
                     segs.push(Seg::Plain(std::mem::take(&mut plain)));
                 }
+                let tlen = tag.len();
                 segs.push(Seg::Tag(tag));
-                rest = &after[tag.len()..];
+                rest = &after[tlen..];
                 continue;
             }
         }

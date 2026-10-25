@@ -283,7 +283,7 @@ impl TintaApp {
         ui.separator();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for heading in &headings {
-                let indent = (heading.level - 1).min(4) * 10.0;
+                let indent = ((heading.level.min(4) - 1) as f32) * 10.0;
                 let label = egui::RichText::new(&heading.text).size(match heading.level {
                     1 => 15.0,
                     2 => 14.0,

@@ -167,8 +167,11 @@ impl Overlays {
                                             .iter()
                                             .find(|(v, _)| *v == *item_id)
                                             .unwrap();
-                                        let label =
-                                            RichText::new(text.clone()).strong(row == selected);
+                                        let label = if row == selected {
+                                            RichText::new(text.clone()).strong()
+                                        } else {
+                                            RichText::new(text.clone())
+                                        };
                                         if ui
                                             .add(
                                                 egui::Button::selectable(selected == row, label)
