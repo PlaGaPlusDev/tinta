@@ -13,8 +13,10 @@ struct VaultSettings {
 }
 
 fn settings_path() -> PathBuf {
-    let base =
-        std::env::var("XDG_CONFIG_HOME").map_or_else(|| PathBuf::from(".config"), PathBuf::from);
+    let base = match std::env::var("XDG_CONFIG_HOME") {
+        Ok(home) => PathBuf::from(home),
+        Err(_) => PathBuf::from(".config"),
+    };
     base.join("tinta/settings.json")
 }
 

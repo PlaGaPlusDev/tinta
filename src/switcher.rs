@@ -141,7 +141,7 @@ impl Overlays {
                                 |ui| {
                                     for (row, (_, item_id)) in ranked.iter().enumerate() {
                                         let (_, text) =
-                                            items.iter().find(|(v, _)| *v == item_id).unwrap();
+                                            items.iter().find(|(v, _)| *v == *item_id).unwrap();
                                         if ui
                                             .add(
                                                 egui::Button::selectable(

@@ -3,7 +3,9 @@
 
 use egui::{Color32, FontId, RichText, Ui};
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
-use syntect::highlighting::{HighlightLines, SyntaxSet, ThemeSet};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::ThemeSet;
+use syntect::parsing::SyntaxSet;
 use std::sync::OnceLock;
 
 // syntect carga sus gramáticas una sola vez e inmediato-mode reutiliza.
