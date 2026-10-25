@@ -91,7 +91,7 @@ pub fn draw_graph(ui: &mut egui::Ui, graph: &GraphData, current: Option<&str>) -
     }
 
     let center = rect.center();
-    let radius = rect.size().min_component() * 0.5 - 28.0;
+    let radius = rect.width().min(rect.height()) * 0.5 - 28.0;
     let to_screen = |p: Vec2| -> Pos2 { Pos2::new(center.x + p.x * radius, center.y + p.y * radius) };
 
     // Aristas.
