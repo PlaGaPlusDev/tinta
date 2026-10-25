@@ -1,0 +1,24 @@
+# GitHub Actions: compila en la nube (RAM local no se usa)
+name: CI
+
+on:
+  push:
+    paths: ["src/**", "Cargo.toml", ".github/workflows/**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --all-targets
+      - name: Build release
+        if: success()
+        run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tinta-linux-x86_64
+          path: target/release/tinta

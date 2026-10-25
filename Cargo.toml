@@ -1,0 +1,24 @@
+[package]
+name = "tinta"
+version = "0.1.0"
+edition = "2024"
+description = "Vault de notas Markdown con UI nativa Rust (egui), libre de Electron"
+license = "MIT"
+
+[[bin]]
+name = "tinta"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+walkdir = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rfd = "0.15"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = true
