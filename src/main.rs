@@ -5,6 +5,7 @@ mod commands;
 mod editor;
 mod fuzzy;
 mod index;
+mod search;
 mod switcher;
 mod theme;
 mod vault;

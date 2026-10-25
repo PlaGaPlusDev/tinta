@@ -1,5 +1,5 @@
 //! Render de Markdown a widgets egui en modo lectura.
-//! Bloques de código con resaltado syntect → LayoutJob.
+//! Wikilinks clicables, tags renderizados, bloques con resaltado syntect.
 
 use egui::{Color32, FontId, RichText, Ui};
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
@@ -8,7 +8,9 @@ use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use std::sync::OnceLock;
 
-// syntect carga sus gramáticas una sola vez; el modo inmediato lo reutiliza.
+use crate::vault::Vault;
+
+// syntect comparte gramáticas entre los frames.
 fn syntax_set() -> &'static SyntaxSet {
     static SS: OnceLock<SyntaxSet> = OnceLock::new();
     SS.get_or_init(SyntaxSet::load_defaults_newlines)
@@ -29,10 +31,67 @@ enum Block {
     Code,
 }
 
-/// Renderiza un texto Markdown en modo lectura.
-pub fn render_markdown(ui: &mut Ui, source: &str) {
+/// Un segmento en línea: texto plano, wikilink o tag.
+enum Seg {
+    Plain(String),
+    Wiki(String),
+    Tag(String),
+}
+
+/// Divide una línea en segmentos interactuables.
+fn split_inline(line: &str) -> Vec<Seg> {
+    let mut segs = Vec::new();
+    let mut plain = String::new();
+    let mut rest = line;
+
+    while !rest.is_empty() {
+        if let Some(p) = rest.find("[[") {
+            if let Some(end) = rest[p + 2..].find("]]") {
+                if !plain.is_empty() {
+                    segs.push(Seg::Plain(std::mem::take(&mut plain)));
+                }
+                let inner = &rest[p + 2..p + 2 + end];
+                let target = inner.split('|').next().unwrap_or(inner).trim();
+                if !target.is_empty() {
+                    segs.push(Seg::Wiki(target.to_string()));
+                }
+                rest = &rest[p + 2 + end + 2..];
+                continue;
+            }
+        }
+        if let Some(p) = rest.find('#') {
+            // '#' con letra después (no heading ya está filtrado por niveles arriba).
+            let after = &rest[p + 1..];
+            let tag: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || matches!(*c, '/' | '_' | '-'))
+                .collect();
+            if !tag.is_empty() && after.starts_with(|c: char| c.is_alphabetic()) {
+                if !plain.is_empty() {
+                    segs.push(Seg::Plain(std::mem::take(&mut plain)));
+                }
+                segs.push(Seg::Tag(tag));
+                rest = &after[tag.len()..];
+                continue;
+            }
+        }
+        // Consumir al menos un char hacia plain.
+        let take = rest.find(|c: char| c == '#' || c == '[').unwrap_or(rest.len());
+        let take = take.max(1);
+        plain.push_str(&rest[..take]);
+        rest = &rest[take..];
+    }
+    if !plain.is_empty() {
+        segs.push(Seg::Plain(plain));
+    }
+    segs
+}
+
+/// Renderiza markdown en modo lectura. Devuelve los wikilinks clicados.
+pub fn render_markdown(ui: &mut Ui, source: &str, vault: &Vault) -> Vec<String> {
     let ss = syntax_set();
     let theme = code_theme();
+    let mut clicked: Vec<String> = Vec::new();
     let mut state = Block::Paragraph;
     let mut paragraph = String::new();
     let mut heading_buf = String::new();
@@ -40,10 +99,20 @@ pub fn render_markdown(ui: &mut Ui, source: &str) {
     let mut code_buf = String::new();
     let mut code_lang = String::new();
 
+    let mut flush = |paragraph: &mut String, clicked: &mut Vec<String>, ui: &mut Ui| {
+        if paragraph.trim().is_empty() {
+            paragraph.clear();
+            return;
+        }
+        render_inline(ui, paragraph.trim(), vault, clicked);
+        ui.add_space(2.0);
+        paragraph.clear();
+    };
+
     for event in Parser::new(source) {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
-                flush_paragraph(ui, &mut paragraph);
+                flush(&mut paragraph, &mut clicked, ui);
                 heading_level = level as u8;
                 heading_buf.clear();
                 state = Block::Heading;
@@ -64,7 +133,7 @@ pub fn render_markdown(ui: &mut Ui, source: &str) {
                 state = Block::Paragraph;
             }
             Event::Start(Tag::CodeBlock(kind)) => {
-                flush_paragraph(ui, &mut paragraph);
+                flush(&mut paragraph, &mut clicked, ui);
                 code_lang = code_lang_of(&kind);
                 code_buf.clear();
                 state = Block::Code;
@@ -88,7 +157,8 @@ pub fn render_markdown(ui: &mut Ui, source: &str) {
             _ => {}
         }
     }
-    flush_paragraph(ui, &mut paragraph);
+    flush(&mut paragraph, &mut clicked, ui);
+    clicked
 }
 
 fn heading_size(level: u8) -> f32 {
@@ -112,17 +182,45 @@ fn code_lang_of(kind: &CodeBlockKind<'_>) -> String {
     }
 }
 
-fn flush_paragraph(ui: &mut Ui, paragraph: &mut String) {
-    if paragraph.trim().is_empty() {
-        paragraph.clear();
-        return;
-    }
-    ui.label(RichText::new(paragraph.trim()).size(15.0));
-    ui.add_space(2.0);
-    paragraph.clear();
+/// Párrafo con wikilinks clicables y tags coloreados.
+fn render_inline(ui: &mut Ui, text: &str, vault: &Vault, clicked: &mut Vec<String>) {
+    ui.horizontal_wrapped(|row| {
+        for seg in split_inline(text) {
+            match seg {
+                Seg::Plain(t) => {
+                    row.label(t);
+                }
+                Seg::Wiki(target) => {
+                    // Solo si es resoluble: wikilink clicable; else gris.
+                    if vault.resolve_link(&target).is_some() {
+                        if row
+                            .button(
+                                RichText::new(&target)
+                                    .color(Color32::from_rgb(140, 170, 255)),
+                            )
+                            .clicked()
+                        {
+                            clicked.push(target);
+                        }
+                    } else {
+                        row.label(
+                            RichText::new(format!("[[{target}]]"))
+                                .weak()
+                                .small(),
+                        );
+                    }
+                }
+                Seg::Tag(tag) => {
+                    row.label(
+                        RichText::new(format!("#{tag}"))
+                            .color(Color32::from_rgb(160, 140, 230)),
+                    );
+                }
+            }
+        }
+    });
 }
 
-/// Resaltado syntect token a token → colores estilo túnel a egui.
 fn code_block_job(
     code: &str,
     lang: &str,
@@ -140,11 +238,8 @@ fn code_block_job(
             continue;
         };
         for (style, span) in ranges {
-            let color = Color32::from_rgb(
-                style.foreground.r,
-                style.foreground.g,
-                style.foreground.b,
-            );
+            let color =
+                Color32::from_rgb(style.foreground.r, style.foreground.g, style.foreground.b);
             job.append(span, 0.0, egui::TextFormat::simple(mono.clone(), color));
         }
     }

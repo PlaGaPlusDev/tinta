@@ -1,12 +1,12 @@
-//! Aplicación principal: paneles, editor, backlinks y overlays.
-//! API egui 0.37: App::ui, Panel unificado, CentralPanel::default_margins.
+//! Aplicación principal: paneles, editor, backlinks, tags, outline, overlays.
 
 use egui::{CentralPanel, Color32, Key, Modifiers, Panel, RichText, Ui};
 use rfd::FileDialog;
 
-use crate::commands::Command;
+use crate::commands::{today_iso, Command};
 use crate::editor::render_markdown;
-use crate::index::{build_backlinks, Backlinks};
+use crate::index::{build_backlinks, build_tags, Backlinks, Tags};
+use crate::search::{search_vault, outline, SearchHit};
 use crate::switcher::{OverlayPick, Overlays};
 use crate::vault::{Note, Vault};
 
@@ -16,10 +16,13 @@ pub struct TintaApp {
     text: String,
     saved_text: String,
     backlinks: Backlinks,
+    tags: Tags,
     dark: bool,
     reading: bool,
     show_backlinks: bool,
+    show_outline: bool,
     overlays: Overlays,
+    search_hits: Vec<SearchHit>,
     sidebar_selected: usize,
     pending_jump: Option<String>,
 }
@@ -36,25 +39,25 @@ impl TintaApp {
             text: String::new(),
             saved_text: String::new(),
             backlinks: Backlinks::default(),
+            tags: Tags::default(),
             dark: true,
             reading: false,
             show_backlinks: true,
+            show_outline: true,
             overlays: Overlays::default(),
+            search_hits: Vec::new(),
             sidebar_selected: 0,
             pending_jump: None,
         };
         if !app.vault.notes.is_empty() {
             app.open_note(0);
-            app.backlinks = build_backlinks(&app.vault);
+            app.reindex();
         }
         app
     }
 
-    /// Abre la nota por índice del vault escaneado.
     fn open_note(&mut self, index: usize) {
-        let Some(note) = self.vault.notes.get(index).cloned() else {
-            return;
-        };
+        let Some(note) = self.vault.notes.get(index).cloned() else { return };
         self.text = std::fs::read_to_string(&note.path).unwrap_or_default();
         self.saved_text = self.text.clone();
         self.current = Some(note);
@@ -62,13 +65,17 @@ impl TintaApp {
     }
 
     fn open_note_rel(&mut self, rel_path: &str) {
-        if let Some(i) = self
-            .vault
-            .notes
-            .iter()
-            .position(|n| n.rel_path == rel_path)
-        {
+        if let Some(i) = self.vault.notes.iter().position(|n| n.rel_path == rel_path) {
             self.open_note(i);
+        }
+    }
+
+    /// Navega por el objetivo de un wikilink (título o ruta).
+    fn follow_link(&mut self, target: &str) {
+        if let Some(note) = self.vault.resolve_link(target) {
+            if let Ok(rel) = note.path.strip_prefix(&self.vault.root) {
+                self.pending_jump = Some(rel.to_string_lossy().replace('\\', "/"));
+            }
         }
     }
 
@@ -76,8 +83,14 @@ impl TintaApp {
         if let Some(note) = &self.current {
             let _ = std::fs::write(&note.path, &self.text);
             self.saved_text = self.text.clone();
-            self.backlinks = build_backlinks(&self.vault);
+            self.reindex();
         }
+    }
+
+    fn reindex(&mut self) {
+        self.vault.scan();
+        self.backlinks = build_backlinks(&self.vault);
+        self.tags = build_tags(&self.vault);
     }
 
     fn open_vault_dialog(&mut self) {
@@ -88,37 +101,47 @@ impl TintaApp {
             self.saved_text.clear();
             if !self.vault.notes.is_empty() {
                 self.open_note(0);
-                self.backlinks = build_backlinks(&self.vault);
+                self.reindex();
             }
         }
     }
 
     fn new_note(&mut self) {
-        let mut path = self.vault.root.join("nueva-nota.md");
+        self.create_note_at("nueva-nota.md", "nueva-nota");
+    }
+
+    /// Nota diaria: "YYYY-MM-DD.md" en la raíz del vault.
+    fn daily_note(&mut self) {
+        self.create_note_at(&format!("{}.md", today_iso()), "el día de hoy");
+    }
+
+    fn create_note_at(&mut self, filename: &str, label: &str) {
+        let mut path = self.vault.root.join(filename);
+        let stem = filename.trim_end_matches(".md");
         let mut n = 1;
         while path.exists() {
-            path = self.vault.root.join(format!("nueva-nota-{n}.md"));
+            path = self.vault.root.join(format!("{stem}-{n}.md"));
             n += 1;
         }
         let _ = std::fs::write(&path, "");
         self.reindex();
         if let Ok(rel) = path.strip_prefix(&self.vault.root) {
             self.open_note_rel(&rel.to_string_lossy().replace('\\', "/"));
+        } else {
+            eprintln!("no se pudo abrir {label}");
         }
-    }
-
-    fn reindex(&mut self) {
-        self.vault.scan();
-        self.backlinks = build_backlinks(&self.vault);
     }
 
     fn run_command(&mut self, command: Command) {
         match command {
             Command::TogglePreview => self.reading = !self.reading,
             Command::ToggleBacklinks => self.show_backlinks = !self.show_backlinks,
+            Command::ToggleOutline => self.show_outline = !self.show_outline,
+            Command::VaultSearch => self.overlays.open_search(None),
             Command::RescanVault => self.reindex(),
             Command::OpenVault => self.open_vault_dialog(),
             Command::NewNote => self.new_note(),
+            Command::DailyNote => self.daily_note(),
             Command::ToggleTheme => self.dark = !self.dark,
             Command::Quit => std::process::exit(0),
         }
@@ -126,21 +149,34 @@ impl TintaApp {
 
     fn handle_shortcuts(&mut self, ui: &mut Ui) {
         if self.overlays.any_open() {
-            return; // Esc/Enter/↑/↓ los gestiona el overlay.
-        }
-        let Some(ctx_ref) = Some(ui.ctx()) else {
             return;
-        };
-        let ctrl = ctx_ref.input(|i| i.modifiers.contains(Modifiers::CTRL));
-        let go = ctx_ref.input(|i| i.key_pressed(Key::O));
-        let pp = ctx_ref.input(|i| i.key_pressed(Key::P));
-        let ss = ctx_ref.input(|i| i.key_pressed(Key::S));
-        if ctrl && go {
+        }
+        let ctx = ui.ctx();
+        let (ctrl, shift) = ctx.input(|i| {
+            (
+                i.modifiers.contains(Modifiers::CTRL),
+                i.modifiers.contains(Modifiers::SHIFT),
+            )
+        });
+        let pressed = ctx.input(|i| {
+            (
+                i.key_pressed(Key::O),
+                i.key_pressed(Key::P),
+                i.key_pressed(Key::S),
+                i.key_pressed(Key::F),
+            )
+        });
+        let (o, p, s, f) = pressed;
+        if ctrl && f {
+            self.overlays.open_search(None);
+        } else if ctrl && o {
             self.overlays.open_switcher();
-        } else if ctrl && pp {
+        } else if ctrl && p {
             self.overlays.open_palette();
-        } else if ctrl && ss {
+        } else if ctrl && s {
             self.save_current();
+        } else if ctrl && shift {
+            // Reservado.
         }
     }
 
@@ -149,12 +185,22 @@ impl TintaApp {
             self.overlays.draw_switcher(ui.ctx(), &self.vault)
         } else if self.overlays.palette_open {
             self.overlays.draw_palette(ui.ctx())
+        } else if self.overlays.search_open {
+            // La búsqueda recalcula por frame con el query tecleado.
+            self.search_hits = search_vault(&self.vault, &self.overlays.query, 80);
+            self.overlays.draw_search(ui.ctx(), &self.search_hits)
         } else {
             OverlayPick::None
         };
         match pick {
             OverlayPick::Note(i) => self.open_note(i),
             OverlayPick::Command(c) => self.run_command(c),
+            OverlayPick::Search(i) => {
+                if let Some(hit) = self.search_hits.get(i) {
+                    let rel = hit.rel_path.clone();
+                    self.open_note_rel(&rel);
+                }
+            }
             OverlayPick::None => {}
         }
     }
@@ -168,6 +214,12 @@ impl eframe::App for TintaApp {
             .min_size(220.0)
             .resizable(true)
             .show(ui, |ui| self.sidebar(ui));
+        if self.show_outline && self.current.is_some() {
+            Panel::right("outline")
+                .min_size(180.0)
+                .resizable(true)
+                .show(ui, |ui| self.outline_panel(ui));
+        }
 
         self.overlay_picker(ui);
         self.handle_shortcuts(ui);
@@ -181,7 +233,7 @@ impl eframe::App for TintaApp {
 }
 
 impl TintaApp {
-    /// Explorador lateral con notas agrupadas por carpeta.
+    /// Explorador lateral agrupado por carpetas.
     fn sidebar(&mut self, ui: &mut Ui) {
         ui.heading("tinta");
         ui.separator();
@@ -216,6 +268,42 @@ impl TintaApp {
             }
         });
     }
+
+    /// Panel derecho: esquema (headings) de la nota abierta.
+    fn outline_panel(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new("Esquema").weak().small());
+        let headings = outline(&self.text);
+        let resp = ui.add(
+            egui::Button::selectable(self.reading, "Modo lectura")
+                .frame(false),
+        );
+        if resp.clicked() {
+            self.reading = !self.reading;
+        }
+        ui.separator();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for heading in &headings {
+                let indent = (heading.level - 1).min(4) * 10.0;
+                let label = egui::RichText::new(&heading.text).size(match heading.level {
+                    1 => 15.0,
+                    2 => 14.0,
+                    _ => 13.0,
+                });
+                ui.indent(format!("outline-{}", heading.line_no), |row| {
+                    row.set_min_width(ui.available_width() * 0.9 - indent);
+                    if row.add(egui::Button::selectable(false, label).frame(false)).clicked() {
+                        // En modo lectura abrimos; salto de caret en V2.
+                        if self.reading {
+                            // scroll por anchor aún no implementado.
+                        }
+                    }
+                });
+            }
+            if headings.is_empty() {
+                ui.label(RichText::new("(sin encabezados)").weak());
+            }
+        });
+    }
 }
 
 fn editor_main(app: &mut TintaApp, ui: &mut Ui) {
@@ -225,14 +313,13 @@ fn editor_main(app: &mut TintaApp, ui: &mut Ui) {
     };
     let dirty = app.text != app.saved_text;
 
-    // Cabecera.
     ui.horizontal(|ui| {
         ui.label(RichText::new(&note.rel_path).weak().monospace());
         if dirty {
-            ui.label(
-                RichText::new("• sin guardar").color(Color32::from_rgb(230, 120, 120)),
-            );
+            ui.label(RichText::new("• sin guardar").color(Color32::from_rgb(230, 120, 120)));
         }
+        let words = app.text.split_whitespace().count();
+        ui.label(RichText::new(format!("{words} palabras")).weak().small());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let label = if app.reading { "✎ Editar" } else { "👁 Leer" };
             if ui.button(label).clicked() {
@@ -243,9 +330,12 @@ fn editor_main(app: &mut TintaApp, ui: &mut Ui) {
     ui.separator();
 
     if app.reading {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            render_markdown(ui, &app.text);
-        });
+        let clicked = egui::ScrollArea::vertical()
+            .show(ui, |ui| render_markdown(ui, &app.text, &app.vault))
+            .inner;
+        for target in clicked.into_iter() {
+            app.follow_link(&target);
+        }
     } else {
         let width = ui.available_width();
         let height = ui.available_height();
@@ -256,21 +346,37 @@ fn editor_main(app: &mut TintaApp, ui: &mut Ui) {
         ui.add_sized(egui::vec2(width, height), edit);
     }
 
-    // Backlinks como sección plana.
+    // Backlinks + tags de la nota actual.
     if app.show_backlinks {
         let title = note.title.clone();
         ui.separator();
-        ui.horizontal_wrapped(|row_ui| {
-            row_ui.label(RichText::new("Backlinks:").weak().small());
+        ui.horizontal_wrapped(|row| {
+            row.label(RichText::new("Backlinks:").weak().small());
             match app.backlinks.get(&title) {
                 None => {
-                    row_ui.label(RichText::new("(sin backlinks)").weak());
+                    row.label(RichText::new("(sin backlinks)").weak());
                 }
                 Some(links) => {
                     for link in links {
-                        if row_ui.button(&link.from).clicked() {
+                        if row.button(&link.from).clicked() {
                             app.pending_jump = Some(link.from.clone());
                         }
+                    }
+                }
+            }
+        });
+        ui.horizontal_wrapped(|row| {
+            row.label(RichText::new("Tags:").weak().small());
+            let note_tags: Vec<String> = crate::index::tags_in_text(&app.text);
+            if note_tags.is_empty() {
+                row.label(RichText::new("(sin tags)").weak());
+            } else {
+                for tag in note_tags {
+                    if row
+                        .button(RichText::new(format!("#{tag}")).weak())
+                        .clicked()
+                    {
+                        app.overlays.open_search(Some(tag));
                     }
                 }
             }
@@ -281,14 +387,16 @@ fn editor_main(app: &mut TintaApp, ui: &mut Ui) {
 fn welcome(app: &mut TintaApp, ui: &mut Ui) {
     ui.add_space(40.0);
     ui.heading("tinta");
-    ui.label(
-        RichText::new("Vault de notas Markdown nativo en Rust — sin Electron").weak(),
-    );
+    ui.label(RichText::new("Vault de notas Markdown nativo en Rust — sin Electron").weak());
     ui.add_space(16.0);
     if ui.button("Abrir carpeta como vault…").clicked() {
         app.open_vault_dialog();
     }
     if ui.button("Reindexar").clicked() {
         app.reindex();
+    }
+    ui.add_space(8.0);
+    if ui.button("Nota del día").clicked() {
+        app.daily_note();
     }
 }
