@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+egui = "0.37"
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 walkdir = "2"
