@@ -5,6 +5,7 @@ use rfd::FileDialog;
 
 use crate::commands::{today_iso, Command};
 use crate::editor::render_markdown;
+use crate::graph::{build_graph, draw_graph, GraphData};
 use crate::index::{build_backlinks, build_tags, Backlinks, Tags};
 use crate::search::{search_vault, outline, SearchHit};
 use crate::switcher::{OverlayPick, Overlays};
@@ -17,8 +18,10 @@ pub struct TintaApp {
     saved_text: String,
     backlinks: Backlinks,
     tags: Tags,
+    graph: GraphData,
     dark: bool,
     reading: bool,
+    graph_view: bool,
     show_backlinks: bool,
     show_outline: bool,
     overlays: Overlays,
@@ -40,8 +43,10 @@ impl TintaApp {
             saved_text: String::new(),
             backlinks: Backlinks::default(),
             tags: Tags::default(),
+            graph: GraphData::default(),
             dark: true,
             reading: false,
+            graph_view: false,
             show_backlinks: true,
             show_outline: true,
             overlays: Overlays::default(),
@@ -91,6 +96,7 @@ impl TintaApp {
         self.vault.scan();
         self.backlinks = build_backlinks(&self.vault);
         self.tags = build_tags(&self.vault);
+        self.graph = build_graph(&self.vault);
     }
 
     fn open_vault_dialog(&mut self) {
@@ -137,6 +143,7 @@ impl TintaApp {
             Command::TogglePreview => self.reading = !self.reading,
             Command::ToggleBacklinks => self.show_backlinks = !self.show_backlinks,
             Command::ToggleOutline => self.show_outline = !self.show_outline,
+            Command::ToggleGraph => self.graph_view = !self.graph_view,
             Command::VaultSearch => self.overlays.open_search(None),
             Command::RescanVault => self.reindex(),
             Command::OpenVault => self.open_vault_dialog(),
@@ -308,6 +315,21 @@ impl TintaApp {
 }
 
 fn editor_main(app: &mut TintaApp, ui: &mut Ui) {
+    if app.graph_view {
+        ui.horizontal(|ui| {
+            if ui.button("← Editor").clicked() {
+                app.graph_view = false;
+            }
+            ui.label(RichText::new("Grafo de notas — click en un nodo para abrirlo").weak().small());
+        });
+        let current = app.current.as_ref().map(|n| n.rel_path.clone());
+        let clicked = draw_graph(ui, &app.graph, current.as_deref());
+        if let Some(i) = clicked {
+            let rel = app.graph.nodes[i].rel_path.clone();
+            app.open_note_rel(&rel);
+        }
+        return;
+    }
     let Some(note) = app.current.clone() else {
         welcome(app, ui);
         return;
@@ -322,6 +344,9 @@ fn editor_main(app: &mut TintaApp, ui: &mut Ui) {
         let words = app.text.split_whitespace().count();
         ui.label(RichText::new(format!("{words} palabras")).weak().small());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("✦ Grafo").clicked() {
+                app.graph_view = !app.graph_view;
+            }
             let label = if app.reading { "✎ Editar" } else { "👁 Leer" };
             if ui.button(label).clicked() {
                 app.reading = !app.reading;

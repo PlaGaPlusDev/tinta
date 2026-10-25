@@ -4,6 +4,7 @@ mod app;
 mod commands;
 mod editor;
 mod fuzzy;
+mod graph;
 mod index;
 mod search;
 mod switcher;
