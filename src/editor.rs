@@ -8,10 +8,10 @@ use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use std::sync::OnceLock;
 
-// syntect carga sus gramáticas una sola vez e inmediato-mode reutiliza.
+// syntect carga sus gramáticas una sola vez; el modo inmediato lo reutiliza.
 fn syntax_set() -> &'static SyntaxSet {
     static SS: OnceLock<SyntaxSet> = OnceLock::new();
-    SS.get_or_init(SyntaxSet::load_defaults_newlines).clone()
+    SS.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
 fn code_theme() -> &'static syntect::highlighting::Theme {
@@ -22,35 +22,41 @@ fn code_theme() -> &'static syntect::highlighting::Theme {
         .unwrap_or_else(|| ts.themes.values().next().unwrap())
 }
 
-/// Estado del render por bloques durante el pase del parser.
+#[derive(Clone, Copy, PartialEq)]
 enum Block {
     Paragraph,
-    Heading { level: u8, buf: String },
-    Code { lang: String, buf: String },
+    Heading,
+    Code,
 }
 
 /// Renderiza un texto Markdown en modo lectura.
 pub fn render_markdown(ui: &mut Ui, source: &str) {
-    let ss = syntax_set().clone();
+    let ss = syntax_set();
     let theme = code_theme();
     let mut state = Block::Paragraph;
     let mut paragraph = String::new();
+    let mut heading_buf = String::new();
+    let mut heading_level = 1u8;
+    let mut code_buf = String::new();
+    let mut code_lang = String::new();
 
     for event in Parser::new(source) {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 flush_paragraph(ui, &mut paragraph);
-                state = Block::Heading { level: level as u8, buf: String::new() };
+                heading_level = level as u8;
+                heading_buf.clear();
+                state = Block::Heading;
             }
             Event::End(TagEnd::Heading(_)) => {
-                if let Block::Heading { level, buf } = state {
-                    let text = std::mem::take(&mut buf);
+                if state == Block::Heading {
+                    let text = std::mem::take(&mut heading_buf);
                     if !text.trim().is_empty() {
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(text.trim())
                                 .strong()
-                                .size(heading_size(level)),
+                                .size(heading_size(heading_level)),
                         );
                     }
                     ui.add_space(2.0);
@@ -59,18 +65,22 @@ pub fn render_markdown(ui: &mut Ui, source: &str) {
             }
             Event::Start(Tag::CodeBlock(kind)) => {
                 flush_paragraph(ui, &mut paragraph);
-                state = Block::Code { lang: code_lang(&kind), buf: String::new() };
+                code_lang = code_lang_of(&kind);
+                code_buf.clear();
+                state = Block::Code;
             }
             Event::End(TagEnd::CodeBlock) => {
-                let Block::Code { lang, buf } = state else {
-                    return;
-                };
-                render_code_block(ui, &buf, &lang, &ss, theme);
+                if state == Block::Code {
+                    let code = std::mem::take(&mut code_buf);
+                    let code = code.trim_start_matches('\n');
+                    ui.label(code_block_job(code, &code_lang, ss, theme));
+                    ui.add_space(6.0);
+                }
                 state = Block::Paragraph;
             }
             Event::Text(t) => match state {
-                Block::Heading { buf, .. } => buf.push_str(&t),
-                Block::Code { buf, .. } => buf.push_str(&t),
+                Block::Heading => heading_buf.push_str(&t),
+                Block::Code => code_buf.push_str(&t),
                 Block::Paragraph => paragraph.push_str(&t),
             },
             Event::Code(c) => paragraph.push_str(&c),
@@ -90,7 +100,7 @@ fn heading_size(level: u8) -> f32 {
     }
 }
 
-fn code_lang(kind: &CodeBlockKind<'_>) -> String {
+fn code_lang_of(kind: &CodeBlockKind<'_>) -> String {
     match kind {
         CodeBlockKind::Fenced(info) => info
             .split([' ', ','])
@@ -112,19 +122,7 @@ fn flush_paragraph(ui: &mut Ui, paragraph: &mut String) {
     paragraph.clear();
 }
 
-fn render_code_block(
-    ui: &mut Ui,
-    code: &str,
-    lang: &str,
-    ss: &SyntaxSet,
-    theme: &syntect::highlighting::Theme,
-) {
-    let job = code_block_job(code.trim_start_matches('\n'), lang, ss, theme);
-    ui.label(job);
-    ui.add_space(6.0);
-}
-
-/// Receta syntect → egui: resaltado token a token con colores del tema.
+/// Resaltado syntect token a token → colores estilo túnel a egui.
 fn code_block_job(
     code: &str,
     lang: &str,

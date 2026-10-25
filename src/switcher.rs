@@ -1,7 +1,7 @@
 //! Overlays: quick switcher (Ctrl+O) y paleta de comandos (Ctrl+P).
 //! Mecánica compartida: entrada de texto con filtro fuzzy + lista navegable.
 
-use egui::{Align2, Area, Context, Frame, Key, Margin, RichText, Ui};
+use egui::{Align2, Area, Context, Frame, Key, Margin, RichText};
 
 use crate::commands::{all_commands, Command};
 use crate::fuzzy::filter_ranked;
