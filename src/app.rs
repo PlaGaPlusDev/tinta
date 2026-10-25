@@ -281,6 +281,7 @@ impl TintaApp {
             self.reading = !self.reading;
         }
         ui.separator();
+        let available = ui.available_width();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for heading in &headings {
                 let indent = ((heading.level.min(4) - 1) as f32) * 10.0;
@@ -290,7 +291,7 @@ impl TintaApp {
                     _ => 13.0,
                 });
                 ui.indent(format!("outline-{}", heading.line_no), |row| {
-                    row.set_min_width(ui.available_width() * 0.9 - indent);
+                    row.set_min_width(available - indent);
                     if row.add(egui::Button::selectable(false, label).frame(false)).clicked() {
                         // En modo lectura abrimos; salto de caret en V2.
                         if self.reading {

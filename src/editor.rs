@@ -100,7 +100,7 @@ pub fn render_markdown(ui: &mut Ui, source: &str, vault: &Vault) -> Vec<String> 
     let mut code_buf = String::new();
     let mut code_lang = String::new();
 
-    let mut flush = |paragraph: &mut String, clicked: &mut Vec<String>, ui: &mut Ui| {
+    let flush = |paragraph: &mut String, clicked: &mut Vec<String>, ui: &mut Ui| {
         if paragraph.trim().is_empty() {
             paragraph.clear();
             return;
